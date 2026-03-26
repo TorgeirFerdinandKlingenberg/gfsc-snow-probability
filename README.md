@@ -10,7 +10,7 @@ Verktøy for nedlasting og prosessering av Gap-filled Fractional Snow Cover (GFS
 
 | Fil | Beskrivelse |
 |-----|-------------|
-| `gfsc_data_downloader.py` | Last ned GFSC-data fra WEkEO (2017-2024) og S3 (2025+) |
+| `gfsc_data_downloader.py` | Last ned GFSC-data fra WEkEO og S3 (inkl. reprosesserte år) |
 | `gfsc_snow_probability_processor.py` | Beregn snøsannsynlighet fra nedlastede data |
 
 ## Hurtigstart
@@ -18,12 +18,12 @@ Verktøy for nedlasting og prosessering av Gap-filled Fractional Snow Cover (GFS
 ### 1. Installer avhengigheter
 
 ```bash
-pip install rasterio numpy pandas matplotlib seaborn hda boto3 retry tqdm geopandas shapely pyproj pyogrio
+pip install rasterio numpy pandas matplotlib seaborn hda boto3 retry tqdm geopandas shapely pyproj pyogrio python-dotenv
 ```
 
 ### 2. Last ned data
 
-Rediger `gfsc_data_downloader.py` med dine credentials og kjør:
+Kopier `.env.example` til `.env` og fyll inn dine WEkEO-credentials, og kjør:
 
 ```bash
 python gfsc_data_downloader.py
@@ -41,8 +41,8 @@ Se [Gap-filled Fractional Snow Cover](https://land.copernicus.eu/en/products/sno
 
 ## Credentials
 
-- **WEkEO** (data før 2025-01-20): Registrer deg på [WEkEO](https://www.wekeo.eu/register)
-- **S3** (data fra 2025-01-20): Ingen registrering nødvendig
+- **WEkEO** (data som ikke er reprosessert på S3): Registrer deg på [WEkEO](https://wekeo.copernicus.eu/register/), legg credentials i `.env` (se `.env.example`)
+- **S3** (2025-data og reprosesserte år som 2017-2018): Ingen registrering nødvendig
 
 ## Lisens
 

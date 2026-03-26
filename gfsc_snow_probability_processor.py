@@ -8,8 +8,8 @@ using temporal aggregation approach - calculating snow probability for each tile
 using ALL available years combined (like OpenEO approach).
 
 Directory structure expected:
-- gfsc_data/GFSC-2017-2024/  (contains directories like GFSC_20170401-007_S1-S2_T32VMM_V101_1639994394/)
-- gfsc_data/GFSC-2025/       (contains directories like CLMS_WSI_GFSC_060m_T32VML_20250401P7D_COMB_V102/)
+- gfsc_data/GFSC-wekeo/  (contains directories like GFSC_20170401-007_S1-S2_T32VMM_V101_1639994394/)
+- gfsc_data/GFSC-s3/     (contains directories like CLMS_WSI_GFSC_060m_T32VML_20180401P7D_COMB_V102/)
 
 Output structure (like OpenEO):
 - 1_raw_yearly_data/        Individual yearly rasters
@@ -41,13 +41,13 @@ warnings.filterwarnings('ignore')
 # ============================================================================
 
 # Data paths (adjust these to match your directory structure)
-OLD_DATA_PATH = "gfsc_data/GFSC-2017-2024"     # Path to 2017-2024 data
-NEW_DATA_PATH = "gfsc_data/GFSC-2025"          # Path to 2025 data
+OLD_DATA_PATH = "gfsc_data/GFSC-wekeo"     # Path to WEkEO data (old format)
+NEW_DATA_PATH = "gfsc_data/GFSC-s3"       # Path to S3 data (new format, reprocessed + 2025+)
 
 # Processing parameters
 YEARS_TO_PROCESS = [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]  # All years
 MONTHS_TO_PROCESS = [4, 5, 6]  # April, May, June
-TILES_TO_PROCESS = ['T32VML', 'T32VMM', 'T32VNL', 'T32VNM']  # All tiles
+TILES_TO_PROCESS = ["32VKK", "32VKL", "32VKM", "32VKN", "32VKP", "32VKQ", "32VLJ", "32VLK", "32VLL", "32VLM", "32VLN", "32VLP", "32VLQ", "32VLR", "32VMJ", "32VMK", "32VML", "32VMM", "32VMN", "32VMP", "32VMQ", "32VMR", "32VNK", "32VNL", "32VNM", "32VNN", "32VNP", "32VNQ", "32VNR", "32VPL", "32VPM", "32VPN", "32VPP", "32VPQ", "32VPR", "32WMS", "32WNA", "32WNS", "32WNT", "32WNU", "32WNV", "32WPA", "32WPB", "32WPS", "32WPT", "32WPU", "32WPV", "33WVM", "33WVN", "33WVP", "33WVQ", "33WVR", "33WVS", "33WVT", "33WWP", "33WWQ", "33WWR", "33WWS", "33WWT", "33WWU", "33WXR", "33WXS", "33WXT", "33WXU", "34WDA", "34WDB", "34WDC", "34WDD", "34WEB", "34WEC", "34WED", "34WEE", "34WFB", "34WFC", "34WFD", "34WFE", "35WMS", "35WMT", "35WMU", "35WMV", "35WNS", "35WNT", "35WNU", "35WNV", "35WPS", "35WPT", "35WPU"]
 
 # Output directory
 OUTPUT_DIR = "gfsc_results"
@@ -61,11 +61,11 @@ QUICK_TEST = False
 
 class UnifiedGFSCProcessor:
     """
-    Unified processor for both GFSC-2017-2024 and GFSC-2025 formats
+    Unified processor for WEkEO (old format) and S3 (new format) data
     with temporal aggregation approach (like OpenEO)
     """
-    
-    def __init__(self, old_data_path: str = "GFSC-2017-2024", new_data_path: str = "GFSC-2025"):
+
+    def __init__(self, old_data_path: str = "GFSC-wekeo", new_data_path: str = "GFSC-s3"):
         self.old_data_path = Path(old_data_path)
         self.new_data_path = Path(new_data_path)
         
@@ -80,13 +80,16 @@ class UnifiedGFSCProcessor:
             print(f"    Old data path does not exist: {self.old_data_path}")
             return found_files
             
+        # Normalize tile_id (support both "32VKL" and "T32VKL")
+        tile_id_pattern = tile_id if tile_id.upper().startswith('T') else f"T{tile_id}"
+        
         # Pattern for old format directory names
-        pattern = f"GFSC_{year:04d}{month:02d}\\d{{2}}-\\d{{3}}_S1-S2_{tile_id}_V101_\\d+"
+        pattern = f"GFSC_{year:04d}{month:02d}\\d{{2}}-\\d{{3}}_S1-S2_{tile_id_pattern}_V101_\\d+"
         
         for item in self.old_data_path.iterdir():
             if item.is_dir() and re.match(pattern, item.name):
                 # Extract date from directory name
-                date_match = re.search(f'GFSC_({year:04d}{month:02d}\\d{{2}})-\\d+_S1-S2_{tile_id}', item.name)
+                date_match = re.search(f'GFSC_({year:04d}{month:02d}\\d{{2}})-\\d+_S1-S2_{tile_id_pattern}', item.name)
                 if date_match:
                     date_str = date_match.group(1)
                     try:
@@ -112,33 +115,35 @@ class UnifiedGFSCProcessor:
         
         return sorted(found_files, key=lambda x: x['date'])
     
-    def scan_new_format_files(self, year: int, month: int, tile_id: str) -> List[Dict]:
+    def scan_new_format_files(self, year: int, month: int, tile_id: str,
+                               search_path: Path = None) -> List[Dict]:
         """
-        Scan for new format files (2025+)
-        Pattern: CLMS_WSI_GFSC_060m_TILEXX_YYYYMMDDP7D_COMB_V102
+        Scan for new format files (CLMS_WSI_GFSC_060m_TILEXX_YYYYMMDDP7D_COMB_V102).
+        Defaults to new_data_path but accepts an override for reprocessed data
+        stored in old_data_path.
         """
         found_files = []
-        
-        if not self.new_data_path.exists():
-            print(f"    New data path does not exist: {self.new_data_path}")
+        path = search_path if search_path is not None else self.new_data_path
+
+        if not path.exists():
+            print(f"    Data path does not exist: {path}")
             return found_files
-            
-        # Pattern for new format directory names
-        pattern = f"CLMS_WSI_GFSC_060m_{tile_id}_{year:04d}{month:02d}\\d{{2}}P7D_COMB_V102"
-        
-        for item in self.new_data_path.iterdir():
+
+        # Normalize tile_id (support both "32VKL" and "T32VKL")
+        tile_id_pattern = tile_id if tile_id.upper().startswith('T') else f"T{tile_id}"
+        pattern = f"CLMS_WSI_GFSC_060m_{tile_id_pattern}_{year:04d}{month:02d}\\d{{2}}P7D_COMB_V102"
+
+        for item in path.iterdir():
             if item.is_dir() and re.match(pattern, item.name):
-                # Extract date from directory name
-                date_match = re.search(f'CLMS_WSI_GFSC_060m_{tile_id}_({year:04d}{month:02d}\\d{{2}})P7D_COMB_V102', item.name)
+                date_match = re.search(f'CLMS_WSI_GFSC_060m_{tile_id_pattern}_({year:04d}{month:02d}\\d{{2}})P7D_COMB_V102', item.name)
                 if date_match:
                     date_str = date_match.group(1)
                     try:
                         date = datetime.strptime(date_str, '%Y%m%d')
-                        
-                        # Look for GF and GF-QA files
+
                         gf_file = item / f"{item.name}_GF.tif"
                         qa_file = item / f"{item.name}_GF-QA.tif"
-                        
+
                         if gf_file.exists() and qa_file.exists():
                             found_files.append({
                                 'file_path': gf_file,
@@ -152,15 +157,18 @@ class UnifiedGFSCProcessor:
                             })
                     except ValueError:
                         continue
-        
+
         return sorted(found_files, key=lambda x: x['date'])
-    
+
     def scan_all_files(self, year: int, month: int, tile_id: str) -> List[Dict]:
-        """Scan for files in both old and new formats"""
+        """Scan for files in both old and new formats across all data paths"""
         old_files = self.scan_old_format_files(year, month, tile_id)
+        # New format from GFSC-2025 (live data) and GFSC-2017-2024 (reprocessed data)
         new_files = self.scan_new_format_files(year, month, tile_id)
-        
-        all_files = old_files + new_files
+        new_files_reprocessed = self.scan_new_format_files(year, month, tile_id,
+                                                            search_path=self.old_data_path)
+
+        all_files = old_files + new_files + new_files_reprocessed
         return sorted(all_files, key=lambda x: x['date'])
     
     def load_gfsc_data(self, file_info: Dict) -> np.ndarray:
@@ -790,8 +798,8 @@ def print_usage_instructions():
 
 1. DATA PREPARATION:
    - Ensure your data is organized in the expected directory structure:
-     * gfsc_data/GFSC-2017-2024/ containing old format directories
-     * gfsc_data/GFSC-2025/ containing new format directories
+     * gfsc_data/GFSC-wekeo/ containing old format directories (WEkEO downloads)
+     * gfsc_data/GFSC-s3/ containing new format directories (S3 downloads, reprocessed + 2025+)
 
 2. CONFIGURATION:
    - Edit the configuration section at the top of this script
