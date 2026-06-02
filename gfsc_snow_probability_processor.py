@@ -47,10 +47,15 @@ NEW_DATA_PATH = "gfsc_data/GFSC-s3"       # Path to S3 data (new format, reproce
 # Processing parameters
 YEARS_TO_PROCESS = [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]  # All years
 MONTHS_TO_PROCESS = [4, 5, 6]  # April, May, June
-TILES_TO_PROCESS = ["32VKK", "32VKL", "32VKM", "32VKN", "32VKP", "32VKQ", "32VLJ", "32VLK", "32VLL", "32VLM", "32VLN", "32VLP", "32VLQ", "32VLR", "32VMJ", "32VMK", "32VML", "32VMM", "32VMN", "32VMP", "32VMQ", "32VMR", "32VNK", "32VNL", "32VNM", "32VNN", "32VNP", "32VNQ", "32VNR", "32VPL", "32VPM", "32VPN", "32VPP", "32VPQ", "32VPR", "32WMS", "32WNA", "32WNS", "32WNT", "32WNU", "32WNV", "32WPA", "32WPB", "32WPS", "32WPT", "32WPU", "32WPV", "33WVM", "33WVN", "33WVP", "33WVQ", "33WVR", "33WVS", "33WVT", "33WWP", "33WWQ", "33WWR", "33WWS", "33WWT", "33WWU", "33WXR", "33WXS", "33WXT", "33WXU", "34WDA", "34WDB", "34WDC", "34WDD", "34WEB", "34WEC", "34WED", "34WEE", "34WFB", "34WFC", "34WFD", "34WFE", "35WMS", "35WMT", "35WMU", "35WMV", "35WNS", "35WNT", "35WNU", "35WNV", "35WPS", "35WPT", "35WPU"]
+TILES_TO_PROCESS = ["32VKL", "32VKM", "32VKN", "32VKP", "32VKQ", "32VLK", "32VLL", "32VLM", "32VLN", "32VLP", "32VLQ", "32VMK", "32VML", "32VMM", "32VMN", "32VMP", "32VMQ", "32VMR", "32VNK", "32VNL", "32VNM", "32VNN", "32VNP", "32VNQ", "32VNR", "32VPL", "32VPM", "32VPN", "32VPP", "32VPQ", "32VPR", "32WMS", "32WNS", "32WNT", "32WPA", "32WPS", "32WPT", "32WPU", "32WPV", "33WVM", "33WVN", "33WVP", "33WVQ", "33WVR", "33WVS", "33WWP", "33WWQ", "33WWR", "33WWS", "33WWT", "33WXR", "33WXS", "33WXT", "34WDA", "34WDB", "34WDC", "34WDD", "34WEB", "34WEC", "34WED", "34WFB", "34WFC", "34WFD", "35WMS", "35WMT", "35WMU", "35WNS", "35WNT", "35WNU", "35WPT", "35WPU"]
 
 # Output directory
 OUTPUT_DIR = "gfsc_results"
+
+# Minimum number of valid (non-NaN) observations a pixel needs before its snow
+# probability is reported. Pixels below this threshold are written as NoData.
+# Guards against single-obs pixels reading 0% or 100% on no evidence.
+MIN_VALID_OBS = 5
 
 # Quick test mode (set to True for faster testing with limited data)
 QUICK_TEST = False
@@ -95,14 +100,16 @@ class UnifiedGFSCProcessor:
                     try:
                         date = datetime.strptime(date_str, '%Y%m%d')
                         
-                        # Look for GF and QC files
+                        # Look for GF, QC, and QCFLAGS files
                         gf_file = item / f"{item.name}_GF.tif"
                         qc_file = item / f"{item.name}_QC.tif"
-                        
+                        qcflags_file = item / f"{item.name}_QCFLAGS.tif"
+
                         if gf_file.exists() and qc_file.exists():
                             found_files.append({
                                 'file_path': gf_file,
                                 'qc_path': qc_file,
+                                'qcflags_path': qcflags_file if qcflags_file.exists() else None,
                                 'tile_id': tile_id,
                                 'date': date,
                                 'year': year,
@@ -173,46 +180,58 @@ class UnifiedGFSCProcessor:
     
     def load_gfsc_data(self, file_info: Dict) -> np.ndarray:
         """
-        Load GFSC data with appropriate quality filtering based on format
+        Load GFSC data and mask cloud, nodata, water, and minimal-quality pixels.
+
+        Water encoding differs between formats (per CLMS PUMs):
+          - Old (WEkEO V101): water is bit 2 in _QCFLAGS.tif (EU-Hydro)
+          - New (S3 V102):    water is value 210 in _GF.tif (HRL-WAW static mask)
         """
         gf_file = file_info['file_path']
         qc_file = file_info['qc_path']
         file_format = file_info['format']
-        
+
         with rasterio.open(gf_file) as gf_src, rasterio.open(qc_file) as qc_src:
             gf_data = gf_src.read(1).astype(np.float32)
             qc_data = qc_src.read(1)
-            
-            # Basic filtering (always applied)
-            gf_data[gf_data == 205] = np.nan  # clouds
-            gf_data[gf_data == 255] = np.nan  # no data
-            
-            # Format-specific quality filtering
+
+            # Cloud / no-data (both formats)
+            gf_data[gf_data == 205] = np.nan
+            gf_data[gf_data == 255] = np.nan
+
+            # Drop minimal-quality observations (QC/GF-QA value 3 in both formats)
+            gf_data[qc_data == 3] = np.nan
+
+            # Water masking
             if file_format == 'old':
-                # Old format: QC values 0=high, 1=medium, 2=low, 3=minimal
-                gf_data[qc_data == 3] = np.nan  # remove minimal quality only
+                qcflags_path = file_info.get('qcflags_path')
+                if qcflags_path is not None:
+                    with rasterio.open(qcflags_path) as qf_src:
+                        qcflags = qf_src.read(1)
+                    gf_data[(qcflags & 4) != 0] = np.nan
             else:
-                # New format: Different QA encoding
-                gf_data[qc_data == 3] = np.nan  # adapt based on new QA specification
-            
+                gf_data[gf_data == 210] = np.nan
+
             return gf_data
     
-    def save_temporal_aggregated_raster(self, data: np.ndarray, transform, crs, 
-                                      filename: Path, description: str, 
+    def save_temporal_aggregated_raster(self, data: np.ndarray, transform, crs,
+                                      filename: Path, description: str,
                                       variable: str, dtype=rasterio.float32):
         """Save temporally aggregated raster"""
-        
+
         filename.parent.mkdir(exist_ok=True)
-        
-        # Handle different data types
+
+        # Use -9999 as GDAL-compatible nodata value for all data types
+        nodata_value = -9999
+
         if dtype == rasterio.int16:
             data_to_write = data.astype(np.int16)
-            nodata_value = -9999
-            data_to_write[np.isnan(data)] = nodata_value
         else:
             data_to_write = data.astype(np.float32)
-            nodata_value = np.nan
-        
+            nodata_value = -9999.0
+
+        # Replace NaN values with nodata value
+        data_to_write[np.isnan(data)] = nodata_value
+
         with rasterio.open(
             filename, 'w',
             driver='GTiff',
@@ -227,7 +246,7 @@ class UnifiedGFSCProcessor:
         ) as dst:
             dst.write(data_to_write, 1)
             dst.set_band_description(1, description)
-            
+
             dst.update_tags(
                 VARIABLE=variable,
                 DESCRIPTION=description,
@@ -282,7 +301,12 @@ class UnifiedGFSCProcessor:
                     raw_dir.mkdir(exist_ok=True)
                     
                     year_stack = np.stack(year_data, axis=0)
-                    year_prob = np.nanmean(year_stack > 0, axis=0) * 100
+                    # Float presence mask preserves NaN so cloud/nodata are
+                    # excluded from the denominator, not counted as "no snow".
+                    year_presence = np.where(
+                        np.isnan(year_stack), np.nan,
+                        (year_stack > 0).astype(np.float32))
+                    year_prob = np.nanmean(year_presence, axis=0) * 100
                     year_obs = np.sum(~np.isnan(year_stack), axis=0)
                     
                     # Save yearly probability
@@ -312,20 +336,26 @@ class UnifiedGFSCProcessor:
         # Calculate temporal aggregation across ALL years
         print(f"  Calculating snow probability across all {len(all_daily_data)} observations...")
         snow_data_stack = np.stack(all_daily_data, axis=0)
-        
-        # Snow probability: percentage of days with snow > 0
-        snow_presence = snow_data_stack > 0
+
+        # Float presence mask preserves NaN so cloud/nodata/water observations
+        # are excluded from the denominator instead of counted as "no snow".
+        snow_presence = np.where(
+            np.isnan(snow_data_stack), np.nan,
+            (snow_data_stack > 0).astype(np.float32))
         snow_probability = np.nanmean(snow_presence, axis=0) * 100
-        
-        # Observation count
+
         observation_count = np.sum(~np.isnan(snow_data_stack), axis=0)
-        
-        # Median snow cover
         median_snow_cover = np.nanmedian(snow_data_stack, axis=0)
-        
-        # Calculate statistics
-        valid_prob = snow_probability[~np.isnan(snow_probability)]
-        valid_obs = observation_count[~np.isnan(observation_count)]
+
+        # Drop pixels with too few valid observations to be statistically meaningful.
+        insufficient = observation_count < MIN_VALID_OBS
+        snow_probability[insufficient] = np.nan
+        median_snow_cover[insufficient] = np.nan
+
+        # Statistics computed over land+sufficient-obs pixels only.
+        valid_mask = ~np.isnan(snow_probability)
+        valid_prob = snow_probability[valid_mask]
+        valid_obs = observation_count[valid_mask]
         
         if len(valid_prob) > 0:
             result = {
