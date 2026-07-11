@@ -13,7 +13,8 @@ Directory structure expected:
 
 Output structure (like OpenEO):
 - 1_raw_yearly_data/        Individual yearly rasters
-- 2_monthly_products/       Main results (temporal aggregation)
+- 2_monthly_products/       Main results (temporal aggregation, whole months)
+- 2_bimonthly_products/     Optional half-month results (day 1-15 / day 16-end)
 - 3_combined_products/      Summary tables
 
 Usage:
@@ -47,6 +48,12 @@ NEW_DATA_PATH = "gfsc_data/GFSC-s3"       # Path to S3 data (new format, reproce
 # Processing parameters
 YEARS_TO_PROCESS = [2017, 2018, 2019, 2020, 2021, 2022, 2023, 2024, 2025]  # All years
 MONTHS_TO_PROCESS = [4, 5, 6]  # April, May, June
+
+# Temporal resolutions to produce:
+#   "monthly"   - one product per whole month (existing behaviour)
+#   "bimonthly" - two products per month: h1 (day 1-15) and h2 (day 16-end)
+# Include one or both, e.g. ["monthly"], ["bimonthly"], or ["monthly", "bimonthly"]
+TEMPORAL_RESOLUTIONS = ["bimonthly"]
 TILES_TO_PROCESS = ["32VKL", "32VKM", "32VKN", "32VKP", "32VKQ", "32VLK", "32VLL", "32VLM", "32VLN", "32VLP", "32VLQ", "32VMK", "32VML", "32VMM", "32VMN", "32VMP", "32VMQ", "32VMR", "32VNK", "32VNL", "32VNM", "32VNN", "32VNP", "32VNQ", "32VNR", "32VPL", "32VPM", "32VPN", "32VPP", "32VPQ", "32VPR", "32WMS", "32WNS", "32WNT", "32WPA", "32WPS", "32WPT", "32WPU", "32WPV", "33WVM", "33WVN", "33WVP", "33WVQ", "33WVR", "33WVS", "33WWP", "33WWQ", "33WWR", "33WWS", "33WWT", "33WXR", "33WXS", "33WXT", "34WDA", "34WDB", "34WDC", "34WDD", "34WEB", "34WEC", "34WED", "34WFB", "34WFC", "34WFD", "35WMS", "35WMT", "35WMU", "35WNS", "35WNT", "35WNU", "35WPT", "35WPU"]
 
 # Output directory
@@ -253,15 +260,20 @@ class UnifiedGFSCProcessor:
                 APPROACH='temporal_aggregation_all_years'
             )
     
-    def process_tile_temporal_aggregation(self, tile_id: str, month: int, years: List[int], output_dir: str) -> Dict:
+    def process_tile_temporal_aggregation(self, tile_id: str, month: int, years: List[int], output_dir: str,
+                                          half: Optional[int] = None) -> Dict:
         """
-        Process one tile across all years for temporal aggregation (like OpenEO approach)
+        Process one tile across all years for temporal aggregation (like OpenEO approach).
+        half=None aggregates the whole month; half=1 uses days 1-15, half=2 days 16-end.
         """
         month_names = {1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'May', 6: 'Jun',
                       7: 'Jul', 8: 'Aug', 9: 'Sep', 10: 'Oct', 11: 'Nov', 12: 'Dec'}
         month_name = month_names[month]
         
-        print(f"\n=== Processing {tile_id} - {month_name} ===")
+        period_label = month_name.lower() + {None: '', 1: '_h1', 2: '_h2'}[half]
+        period_title = month_name + {None: '', 1: ' 1-15', 2: ' 16-end'}[half]
+
+        print(f"\n=== Processing {tile_id} - {period_title} ===")
         print(f"Years: {years}")
         
         all_daily_data = []
@@ -272,6 +284,11 @@ class UnifiedGFSCProcessor:
         # Collect data for each year
         for year in years:
             files = self.scan_all_files(year, month, tile_id)
+            # Bi-monthly: keep only observations dated in the requested half
+            if half == 1:
+                files = [f for f in files if f['date'].day <= 15]
+            elif half == 2:
+                files = [f for f in files if f['date'].day >= 16]
             if len(files) > 0:
                 print(f"  {year}: {len(files)} files")
                 
@@ -310,18 +327,18 @@ class UnifiedGFSCProcessor:
                     year_obs = np.sum(~np.isnan(year_stack), axis=0)
                     
                     # Save yearly probability
-                    year_prob_file = raw_dir / f"{tile_id}_{year}_{month_name.lower()}_snow_probability.tif"
+                    year_prob_file = raw_dir / f"{tile_id}_{year}_{period_label}_snow_probability.tif"
                     self.save_temporal_aggregated_raster(
                         year_prob, reference_transform, reference_crs,
-                        year_prob_file, f"Snow Probability (%) - {tile_id} {month_name} {year}",
+                        year_prob_file, f"Snow Probability (%) - {tile_id} {period_title} {year}",
                         variable='snow_probability'
                     )
                     
                     # Save yearly observation count
-                    year_obs_file = raw_dir / f"{tile_id}_{year}_{month_name.lower()}_observation_count.tif"
+                    year_obs_file = raw_dir / f"{tile_id}_{year}_{period_label}_observation_count.tif"
                     self.save_temporal_aggregated_raster(
                         year_obs, reference_transform, reference_crs,
-                        year_obs_file, f"Observation Count - {tile_id} {month_name} {year}",
+                        year_obs_file, f"Observation Count - {tile_id} {period_title} {year}",
                         variable='observation_count', dtype=rasterio.int16
                     )
             else:
@@ -330,7 +347,7 @@ class UnifiedGFSCProcessor:
         print(f"  Total observations collected: {len(all_daily_data)}")
         
         if len(all_daily_data) == 0:
-            print(f"  No data available for {tile_id} {month_name}")
+            print(f"  No data available for {tile_id} {period_title}")
             return None
         
         # Calculate temporal aggregation across ALL years
@@ -362,6 +379,9 @@ class UnifiedGFSCProcessor:
                 'tile_id': tile_id,
                 'month': month,
                 'month_name': month_name,
+                'half': half,
+                'period_label': period_label,
+                'period_title': period_title,
                 'years_processed': years,
                 'total_observations': len(all_daily_data),
                 'snow_probability': snow_probability,
@@ -380,14 +400,14 @@ class UnifiedGFSCProcessor:
             }
             
             # Print statistics
-            print(f"  Results for {tile_id} {month_name}:")
+            print(f"  Results for {tile_id} {period_title}:")
             print(f"    Mean snow probability: {np.mean(valid_prob):.1f}%")
             print(f"    Snow coverage: {result['snow_coverage_percent']:.1f}% of pixels")
             print(f"    Data quality: {np.mean(valid_obs):.1f} obs/pixel")
             
             return result
         else:
-            print(f"  No valid data for {tile_id} {month_name}")
+            print(f"  No valid data for {tile_id} {period_title}")
             return None
     
     def save_tile_temporal_csv(self, result: Dict, csv_file: Path):
@@ -395,13 +415,13 @@ class UnifiedGFSCProcessor:
         
         csv_data = {
             'metric': [
-                'tile_id', 'month', 'month_name', 'years_processed',
+                'tile_id', 'month', 'period', 'years_processed',
                 'total_observations', 'total_pixels', 'mean_snow_probability',
                 'median_snow_probability', 'min_snow_probability', 'max_snow_probability',
                 'mean_observations_per_pixel', 'pixels_with_snow', 'snow_coverage_percent'
             ],
             'value': [
-                result['tile_id'], result['month'], result['month_name'],
+                result['tile_id'], result['month'], result['period_title'],
                 f"{min(result['years_processed'])}-{max(result['years_processed'])}",
                 result['total_observations'], result['total_pixels'],
                 result['mean_snow_probability'], result['median_snow_probability'],
@@ -420,15 +440,12 @@ class UnifiedGFSCProcessor:
         # Create summary table
         summary_data = []
         
-        for month, month_data in results.items():
-            month_names = {4: 'April', 5: 'May', 6: 'June'}
-            month_name = month_names[month]
-            
-            for tile_id, result in month_data.items():
+        for period_label, period_data in results.items():
+            for tile_id, result in period_data.items():
                 summary_data.append({
                     'tile_id': result['tile_id'],
                     'month': result['month'],
-                    'month_name': result['month_name'],
+                    'period': result['period_title'],
                     'total_observations': result['total_observations'],
                     'mean_snow_probability_percent': result['mean_snow_probability'],
                     'snow_coverage_percent': result['snow_coverage_percent'],
@@ -443,15 +460,13 @@ class UnifiedGFSCProcessor:
             print(f"Created combined summary: {summary_file.name}")
             
             # Print final summary
-            print(f"\n=== FINAL SUMMARY BY TILE AND MONTH ===")
-            for month in [4, 5, 6]:
-                month_names = {4: 'April', 5: 'May', 6: 'June'}
-                month_name = month_names[month]
-                month_data = summary_df[summary_df['month'] == month]
-                
-                if len(month_data) > 0:
-                    print(f"\n{month_name}:")
-                    for _, row in month_data.iterrows():
+            print(f"\n=== FINAL SUMMARY BY TILE AND PERIOD ===")
+            for period in summary_df['period'].unique():
+                period_data = summary_df[summary_df['period'] == period]
+
+                if len(period_data) > 0:
+                    print(f"\n{period}:")
+                    for _, row in period_data.iterrows():
                         print(f"  {row['tile_id']}: {row['mean_snow_probability_percent']:.1f}% mean probability, "
                               f"{row['snow_coverage_percent']:.1f}% coverage")
             
@@ -460,9 +475,12 @@ class UnifiedGFSCProcessor:
         return None
     
     def process_all_tiles_temporal_aggregation(self, years: List[int] = None, months: List[int] = None, 
-                                             tiles: List[str] = None, output_dir: str = ".") -> Dict:
+                                             tiles: List[str] = None, output_dir: str = ".",
+                                             resolutions: List[str] = None) -> Dict:
         """
-        Process all tiles with temporal aggregation - like OpenEO approach but for each tile
+        Process all tiles with temporal aggregation - like OpenEO approach but for each tile.
+        resolutions selects the products: "monthly" (whole months) and/or "bimonthly"
+        (half-months: h1 = days 1-15, h2 = days 16-end).
         """
         if years is None:
             years = list(range(2017, 2026))
@@ -472,10 +490,23 @@ class UnifiedGFSCProcessor:
         
         if tiles is None:
             tiles = ['T32VML', 'T32VMM', 'T32VNL', 'T32VNM']
+
+        if resolutions is None:
+            resolutions = ['monthly']
+
+        # Expand months into (month, half) periods: half is None for a whole
+        # month, 1 for days 1-15, 2 for days 16-end.
+        periods = []
+        for month in months:
+            if 'monthly' in resolutions:
+                periods.append((month, None))
+            if 'bimonthly' in resolutions:
+                periods.extend([(month, 1), (month, 2)])
         
         print("=== TEMPORAL AGGREGATION BY TILE (OpenEO Style) ===")
         print(f"Years: {years}")
         print(f"Months: {months}")
+        print(f"Temporal resolutions: {resolutions}")
         print(f"Tiles: {tiles}")
         print(f"Approach: Calculate snow probability for each tile using ALL available years")
         
@@ -483,64 +514,79 @@ class UnifiedGFSCProcessor:
         output_path = Path(output_dir)
         raw_data_dir = output_path / "1_raw_yearly_data"
         monthly_products_dir = output_path / "2_monthly_products"
+        bimonthly_products_dir = output_path / "2_bimonthly_products"
         combined_products_dir = output_path / "3_combined_products"
-        
+
         raw_data_dir.mkdir(exist_ok=True)
-        monthly_products_dir.mkdir(exist_ok=True)
+        if 'monthly' in resolutions:
+            monthly_products_dir.mkdir(exist_ok=True)
+        if 'bimonthly' in resolutions:
+            bimonthly_products_dir.mkdir(exist_ok=True)
         combined_products_dir.mkdir(exist_ok=True)
-        
+
         print(f"\nResults will be saved in:")
         print(f"  Raw yearly data: {raw_data_dir}")
-        print(f"  Monthly products: {monthly_products_dir}")
+        if 'monthly' in resolutions:
+            print(f"  Monthly products: {monthly_products_dir}")
+        if 'bimonthly' in resolutions:
+            print(f"  Bi-monthly products: {bimonthly_products_dir}")
         print(f"  Combined products: {combined_products_dir}")
         
         results = {}
         processing_log = []
         start_time = time.time()
         
-        # Process each month
-        for month in months:
-            month_names = {4: 'April', 5: 'May', 6: 'June'}
+        # Process each period (whole month or half-month)
+        for month, half in periods:
+            month_names = {1: 'January', 2: 'February', 3: 'March', 4: 'April',
+                           5: 'May', 6: 'June', 7: 'July', 8: 'August',
+                           9: 'September', 10: 'October', 11: 'November', 12: 'December'}
             month_name = month_names[month]
+            period_label = month_name.lower() + {None: '', 1: '_h1', 2: '_h2'}[half]
+            period_title = month_name + {None: '', 1: ' 1-15', 2: ' 16-end'}[half]
+            products_dir = monthly_products_dir if half is None else bimonthly_products_dir
             
             print(f"\n{'='*60}")
-            print(f"PROCESSING {month_name.upper()}")
+            print(f"PROCESSING {period_title.upper()}")
             print(f"{'='*60}")
             
-            results[month] = {}
-            
-            # Process each tile for this month
+            results[period_label] = {}
+
+            # Process each tile for this period
             for tile_id in tiles:
-                result = self.process_tile_temporal_aggregation(tile_id, month, years, output_dir)
-                
+                result = self.process_tile_temporal_aggregation(tile_id, month, years, output_dir, half=half)
+
                 if result:
-                    results[month][tile_id] = result
+                    # Relabel with full month names for products/CSV ('april_h1', not 'apr_h1')
+                    result['period_label'] = period_label
+                    result['period_title'] = period_title
+                    results[period_label][tile_id] = result
                     
-                    # Save monthly products for this tile
-                    prob_file = monthly_products_dir / f"{tile_id}_{month_name.lower()}_snow_probability_all_years.tif"
-                    obs_file = monthly_products_dir / f"{tile_id}_{month_name.lower()}_observation_count_all_years.tif"
-                    median_file = monthly_products_dir / f"{tile_id}_{month_name.lower()}_median_snow_all_years.tif"
+                    # Save products for this tile and period
+                    prob_file = products_dir / f"{tile_id}_{period_label}_snow_probability_all_years.tif"
+                    obs_file = products_dir / f"{tile_id}_{period_label}_observation_count_all_years.tif"
+                    median_file = products_dir / f"{tile_id}_{period_label}_median_snow_all_years.tif"
                     
                     self.save_temporal_aggregated_raster(
                         result['snow_probability'], result['transform'], result['crs'],
-                        prob_file, f"Snow Probability (%) - {tile_id} {month_name} (All Years)",
+                        prob_file, f"Snow Probability (%) - {tile_id} {period_title} (All Years)",
                         variable='snow_probability'
                     )
                     
                     self.save_temporal_aggregated_raster(
                         result['observation_count'], result['transform'], result['crs'],
-                        obs_file, f"Observation Count - {tile_id} {month_name} (All Years)",
+                        obs_file, f"Observation Count - {tile_id} {period_title} (All Years)",
                         variable='observation_count', dtype=rasterio.int16
                     )
                     
                     self.save_temporal_aggregated_raster(
                         result['median_snow_cover'], result['transform'], result['crs'],
-                        median_file, f"Median Snow Cover (%) - {tile_id} {month_name} (All Years)",
+                        median_file, f"Median Snow Cover (%) - {tile_id} {period_title} (All Years)",
                         variable='median_snow_cover'
                     )
                     
                     # Save CSV
-                    csv_file = monthly_products_dir / f"{tile_id}_{month_name.lower()}_statistics_all_years.csv"
+                    csv_file = products_dir / f"{tile_id}_{period_label}_statistics_all_years.csv"
                     self.save_tile_temporal_csv(result, csv_file)
                     
                     result['files'] = {
@@ -550,12 +596,12 @@ class UnifiedGFSCProcessor:
                         'csv': csv_file
                     }
                     
-                    processing_log.append(f"{tile_id} {month_name}: SUCCESS - {result['total_observations']} obs, "
+                    processing_log.append(f"{tile_id} {period_title}: SUCCESS - {result['total_observations']} obs, "
                                         f"{result['snow_coverage_percent']:.1f}% snow coverage")
                     
                     print(f"    Saved: {prob_file.name}, {obs_file.name}, {csv_file.name}")
                 else:
-                    processing_log.append(f"{tile_id} {month_name}: FAILED - No data")
+                    processing_log.append(f"{tile_id} {period_title}: FAILED - No data")
         
         # Create combined products (summary across all tiles)
         print(f"\n{'='*60}")
@@ -566,14 +612,14 @@ class UnifiedGFSCProcessor:
         
         # Final summary
         total_time = time.time() - start_time
-        successful_datasets = sum(len(month_data) for month_data in results.values())
-        total_possible = len(months) * len(tiles)
+        successful_datasets = sum(len(period_data) for period_data in results.values())
+        total_possible = len(periods) * len(tiles)
         
         print(f"\n{'='*60}")
         print(f"TEMPORAL AGGREGATION COMPLETE")
         print(f"{'='*60}")
         print(f"Total processing time: {total_time/60:.1f} minutes")
-        print(f"Successfully processed: {successful_datasets}/{total_possible} tile-month combinations")
+        print(f"Successfully processed: {successful_datasets}/{total_possible} tile-period combinations")
         
         # Save processing log
         log_file = output_path / "processing_log_temporal_aggregation.txt"
@@ -605,15 +651,12 @@ class GFSCAnalyzer:
         """
         Create snow probability visualization plots for temporal aggregation results
         """
-        month_names = {4: 'April', 5: 'May', 6: 'June'}
-        
-        for month, month_data in results.items():
-            month_name = month_names[month]
-            
+        for period_label, period_data in results.items():
             # Create subplot for all tiles
-            n_tiles = len(month_data)
+            n_tiles = len(period_data)
             if n_tiles == 0:
                 continue
+            period_title = next(iter(period_data.values()))['period_title']
                 
             cols = 2
             rows = (n_tiles + 1) // 2
@@ -625,7 +668,7 @@ class GFSCAnalyzer:
                 axes = axes.reshape(1, -1)
             
             tile_idx = 0
-            for tile_id, result in month_data.items():
+            for tile_id, result in period_data.items():
                 row = tile_idx // cols
                 col = tile_idx % cols
                 ax = axes[row, col] if rows > 1 else axes[col]
@@ -634,7 +677,7 @@ class GFSCAnalyzer:
                 
                 # Plot snow probability
                 im = ax.imshow(probability, cmap='Blues', vmin=0, vmax=100)
-                ax.set_title(f'{tile_id} - {month_name} (All Years)\nSnow Probability')
+                ax.set_title(f'{tile_id} - {period_title} (All Years)\nSnow Probability')
                 ax.axis('off')
                 
                 # Add colorbar
@@ -662,11 +705,11 @@ class GFSCAnalyzer:
                 ax = axes[row, col] if rows > 1 else axes[col]
                 ax.axis('off')
             
-            plt.suptitle(f'Snow Probability - {month_name} (Temporal Aggregation All Years)', fontsize=16)
+            plt.suptitle(f'Snow Probability - {period_title} (Temporal Aggregation All Years)', fontsize=16)
             plt.tight_layout()
             
             if save_plot:
-                plot_file = self.results_dir / f"snow_probability_{month_name.lower()}_all_tiles.png"
+                plot_file = self.results_dir / f"snow_probability_{period_label}_all_tiles.png"
                 plt.savefig(plot_file, dpi=300, bbox_inches='tight')
                 print(f"Saved plot: {plot_file}")
             
@@ -735,6 +778,7 @@ def run_quick_test():
     print(f"Testing with years: {test_years}")
     print(f"Testing with months: {test_months}")
     print(f"Testing with tiles: {test_tiles}")
+    print(f"Testing with resolutions: {TEMPORAL_RESOLUTIONS}")
     print()
     
     # Create output directory
@@ -745,6 +789,7 @@ def run_quick_test():
         years=test_years,
         months=test_months,
         tiles=test_tiles,
+        resolutions=TEMPORAL_RESOLUTIONS,
         output_dir=OUTPUT_DIR
     )
     
@@ -778,6 +823,7 @@ def run_full_processing():
     
     print(f"Processing years: {YEARS_TO_PROCESS}")
     print(f"Processing months: {MONTHS_TO_PROCESS}")
+    print(f"Temporal resolutions: {TEMPORAL_RESOLUTIONS}")
     print(f"Processing tiles: {TILES_TO_PROCESS} (individually)")
     print(f"Output directory: {OUTPUT_DIR}")
     print()
@@ -787,6 +833,7 @@ def run_full_processing():
         years=YEARS_TO_PROCESS,
         months=MONTHS_TO_PROCESS,
         tiles=TILES_TO_PROCESS,
+        resolutions=TEMPORAL_RESOLUTIONS,
         output_dir=OUTPUT_DIR
     )
     
@@ -795,6 +842,7 @@ def run_full_processing():
         print(f"Check the '{OUTPUT_DIR}' directory structure:")
         print(f"  📁 1_raw_yearly_data/ - Individual yearly rasters for each tile")
         print(f"  📁 2_monthly_products/ - Monthly snow probability rasters (all years combined)")
+        print(f"  📁 2_bimonthly_products/ - Half-month rasters (when 'bimonthly' is enabled)")
         print(f"  📁 3_combined_products/ - Summary tables and statistics")
         print(f"  📄 processing_log_temporal_aggregation.txt")
         
@@ -833,7 +881,7 @@ def print_usage_instructions():
 
 2. CONFIGURATION:
    - Edit the configuration section at the top of this script
-   - Adjust paths, years, months, and tiles as needed
+   - Adjust paths, years, months, tiles, and TEMPORAL_RESOLUTIONS as needed
 
 3. PROCESSING OPTIONS:
    - Quick test: Set QUICK_TEST = True (recommended first)
@@ -841,7 +889,8 @@ def print_usage_instructions():
 
 4. OUTPUT STRUCTURE (like OpenEO):
    - 1_raw_yearly_data/: Individual yearly rasters
-   - 2_monthly_products/: Main results (temporal aggregation)
+   - 2_monthly_products/: Main results (temporal aggregation, whole months)
+   - 2_bimonthly_products/: Half-month results (if "bimonthly" in TEMPORAL_RESOLUTIONS)
    - 3_combined_products/: Summary tables
 
 5. MAIN PRODUCTS:
@@ -849,6 +898,8 @@ def print_usage_instructions():
    - {tile}_april_snow_probability_all_years.tif
    - {tile}_may_snow_probability_all_years.tif  
    - {tile}_june_snow_probability_all_years.tif
+   Bi-monthly products (in 2_bimonthly_products/) add _h1 (days 1-15) or
+   _h2 (days 16-end) to the month name, e.g. {tile}_april_h1_snow_probability_all_years.tif
 
 6. INTERPRETATION:
    Snow probability = (days with snow > 0) / (total valid days)
