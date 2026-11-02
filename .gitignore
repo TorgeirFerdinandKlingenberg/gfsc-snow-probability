@@ -207,3 +207,20 @@ marimo/_lsp/
 __marimo__/
 gfsc_data/
 gfsc_results/
+# Streaming processor outputs and QA3 test runs
+gfsc_s3_results/
+gfsc_qa3_*/
+
+# Local verification / coverage-check scripts (not needed to reproduce results)
+verify_*.py
+
+# Local tool settings
+.claude/
+
+# Never commit rasters or per-run state
+*.tif
+*.tif.aux.xml
+*.pix
+*.pox
+.wekeo_downloaded_ids.txt
+.cdse_downloaded_ids.txt

@@ -2,9 +2,10 @@ MIT License
 
 Copyright (c) 2025 Torgeir Ferdinand Klingenberg
 
-Portions of this software (gfsc_data_downloader.py) are derived from:
-https://github.com/eea/clms-hrsi-api-client-python
-Copyright (c) 2024 European Environment Agency (EEA)
+Portions of this software (gfsc_data_downloader.py and the S3 access in
+gfsc_stream_processor.py) are derived from:
+https://github.com/eea/clms-hrwsi-api-client-python
+Copyright (c) 2024 European Environment Agency
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
